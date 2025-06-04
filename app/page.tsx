@@ -11,8 +11,10 @@ export default function Home() {
   const accessKeyId = "";
   const secretAccessKey = "";
   const region = "ap-northeast-1";
-
+  
   const handleMasterStreaming = async () => {
+    // 用於儲存viewer的ID
+    let remoteId = '';
     const kinesisVideoClient = new AWS.KinesisVideo({
       region,
       accessKeyId,
@@ -86,12 +88,55 @@ export default function Home() {
         peerConnection.addTrack(track, localStream);
       });
     });
+
+    signalingClient.on('sdpOffer', async (offer, remoteClientId) => {
+    console.warn('[master] get sdp offer')
+    remoteId = remoteClientId;
+    await peerConnection.setRemoteDescription(offer);
+    await peerConnection.setLocalDescription(
+      await peerConnection.createAnswer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      }),
+    );
+
+      // 接到發話端的 SDP offer 後，進行 SDP answer 的回應
+      // 將 SDP answer 回應給 viewer 端
+      console.warn('[master] send sdp answer')
+      signalingClient.sendSdpAnswer(peerConnection.localDescription as RTCSessionDescription, remoteId);
+    });
+
+    signalingClient.on('close', () => {
+      console.log('close');
+    });
+
+    signalingClient.on('error', error => {
+      console.log('error', error);
+    });
+
+    // 本地端的 RTCPeerConnection 產生 ICE 候選後，透過 signalingClient 傳送給發話端
+    peerConnection.addEventListener('icecandidate', ({ candidate }) => {
+      if (candidate) {
+        console.warn('[master] send iceCandidate')
+        console.log(candidate)
+        signalingClient.sendIceCandidate(candidate, remoteId);
+      } else {
+        console.log('No more ICE candidates will be generated')
+      }
+    });
+
+    peerConnection.ontrack = event => {
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = event.streams[0];
+    }};
+
     signalingClient.open();
 
   };
 
   const handleViewStreaming = async () => {
-
+   
+    const clientId = Math.floor(Math.random() * 999999).toString();
     const kinesisVideoClient = new AWS.KinesisVideo({
       region: region,
       accessKeyId: accessKeyId,
@@ -140,6 +185,7 @@ export default function Home() {
       channelARN,
       channelEndpoint: wssEndpoint!,
       role: Role.VIEWER,
+      clientId,
       region,
       credentials: {
         accessKeyId,
