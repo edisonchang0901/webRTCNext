@@ -1,16 +1,20 @@
-import Image from "next/image";
 "use client";
+import { useRef, useState } from 'react';
 import { Role, SignalingClient } from "amazon-kinesis-video-streams-webrtc";
 import AWS from 'aws-sdk';
-import { useRef } from 'react';
+
 
 export default function Home() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  const channelARN = "";
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const recordedChunks = useRef<Blob[]>([]);
   const accessKeyId = "";
   const secretAccessKey = "";
   const region = "ap-northeast-1";
+  const channelARN = "";
   
   const handleMasterStreaming = async () => {
     // 用於儲存viewer的ID
@@ -87,6 +91,8 @@ export default function Home() {
       localStream.getTracks().forEach(track => {
         peerConnection.addTrack(track, localStream);
       });
+
+      setLocalStream(localStream);
     });
 
     signalingClient.on('sdpOffer', async (offer, remoteClientId) => {
@@ -222,21 +228,12 @@ export default function Home() {
     signalingClient.on('sdpAnswer', async (sdpAnswer) => {
       console.warn('[viewer] get sdp answer')
 
-      if (peerConnection.signalingState !== 'stable') {
-        console.warn('Received SDP answer while not in stable state:', peerConnection.signalingState);
-        return;
-      }
       await peerConnection.setRemoteDescription(new RTCSessionDescription(sdpAnswer));
     });
 
     // 處理 ICE 候選者
     signalingClient.on('iceCandidate', async (candidate) => {
       console.warn('[viewer] get ice candidate', candidate);
-
-      if (peerConnection.signalingState !== 'stable') {
-        console.warn('Received ICE candidate while not in stable state:', peerConnection.signalingState);
-        return;
-      }
 
       try {
         await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
@@ -270,6 +267,44 @@ export default function Home() {
   };
 
 
+  const startRecording = () => {
+    if (!localStream || isRecording) return;
+
+    const recorder = new MediaRecorder(localStream, { mimeType: "video/webm; codecs=vp9" });
+    setMediaRecorder(recorder);
+    setIsRecording(true);
+
+    // 每次資料可用時，就呼叫上傳
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        uploadChunk(event.data); // 分段上傳
+      }
+    };
+
+    recorder.onstop = async () => {
+      // 停止時只是重設狀態
+      setIsRecording(false);
+    };
+    
+    recorder.start(10000);  
+  };
+
+  const stopRecording = () => {
+    mediaRecorder?.stop();
+  };
+
+ const uploadChunk = async (blob: Blob) => {
+  const formData = new FormData();
+  formData.append("file", blob, `chunk_${Date.now()}.webm`);
+
+  await fetch("http://host.docker.internal:8000/api/upload", {
+    method: "POST",
+    body: formData,
+  });
+};
+
+
+
   return (
   <div>
     <button 
@@ -295,16 +330,15 @@ export default function Home() {
       <div style={{ marginTop: '10px' }}>
         <p>🛰️ Remote Stream</p>
         <video
-          ref={remoteVideoRef} // 👈 記得先在上面用 useRef 宣告
+          ref={remoteVideoRef}
           autoPlay
           playsInline
           style={{ width: '500px', height: '200px', border: '1px solid red' }}
         />
     </div>
+       <button onClick={startRecording} disabled={isRecording} style={{ padding: '10px 20px', marginBottom: '10px', backgroundColor: isRecording ? '#ccc' : '#10b981', color: 'white', border: 'none', borderRadius: '5px' }}>Start Recording</button>
+       <button onClick={stopRecording} style={{ padding: '10px 20px', marginBottom: '10px', backgroundColor: '#ef4444', color: 'white', border: 'none', borderRadius: '5px' }}>Stop & Upload</button>
   </div>
     
   );
 };
-
-
-
